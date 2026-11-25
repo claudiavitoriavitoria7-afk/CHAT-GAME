@@ -77,7 +77,7 @@
     .room-info {
       font-size: 0.8rem;
       color: var(--muted);
-      display: flex;
+      display: none;
       align-items: center;
       gap: 10px;
     }
@@ -97,6 +97,11 @@
       background: var(--neon);
       color: #050806;
       box-shadow: var(--neon-glow);
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
     }
 
     .btn-sm {
@@ -222,5 +227,355 @@
     }
 
     .alert-box {
+      padding: 10px 12px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      display: none;
+    }
+
+    #chat-alert {
       margin: 0 16px 10px;
-      padding:
+    }
+
+    .alert-error {
+      background: var(--danger-bg);
+      border: 1px solid var(--danger);
+      color: #ff94a8;
+    }
+
+    .alert-ok {
+      background: var(--neon-dim);
+      border: 1px solid var(--neon);
+      color: var(--neon);
+    }
+
+    .composer {
+      display: flex;
+      gap: 10px;
+      padding: 12px 16px;
+      background: #090d0b;
+      border-top: 1px solid var(--border);
+    }
+
+    .empty-state {
+      color: var(--muted);
+      text-align: center;
+      margin: auto;
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="brand">
+        <span class="dot"></span>
+        <span>NEON//CHAT</span>
+      </div>
+      <div class="room-info" id="room-status">
+        <span id="active-user"></span>
+        <button class="btn btn-sm btn-danger" id="logout-btn" type="button">Sair</button>
+      </div>
+    </div>
+
+    <!-- 1. TELA DE LOGIN -->
+    <form id="login-screen">
+      <h2>// ENTRAR NA SALA</h2>
+      <p>Informe seu apelido e a chave secreta da sala para criptografar e ler as mensagens.</p>
+
+      <div class="field">
+        <label for="nickname">APELIDO DO JOGADOR</label>
+        <input type="text" id="nickname" placeholder="Ex: ShadowByte" maxlength="24" required />
+      </div>
+
+      <div class="field">
+        <label for="room-key">SENHA / CHAVE SECRETA DA SALA</label>
+        <input type="password" id="room-key" placeholder="Ex: chave-da-guilda-2026" required />
+      </div>
+
+      <div id="login-alert" class="alert-box alert-error"></div>
+
+      <button class="btn" type="submit">CONECTAR AO CHAT</button>
+    </form>
+
+    <!-- 2. TELA DE CHAT -->
+    <section id="chat-screen">
+      <div id="messages-box">
+        <div class="empty-state">Carregando mensagens da sala...</div>
+      </div>
+
+      <div id="chat-alert" class="alert-box"></div>
+
+      <form class="composer" id="send-form">
+        <input type="text" id="message-input" placeholder="Digite sua mensagem..." autocomplete="off" required />
+        <button class="btn" type="submit">ENVIAR</button>
+      </form>
+    </section>
+  </div>
+
+  <script>
+    // COLE AQUI A URL DO SEU APP DA WEB DO GOOGLE APPS SCRIPT
+    const APPS_SCRIPT_URL = "[COLE AQUI SUA URL /exec]";
+    const POLL_INTERVAL_MS = 4000;
+
+    // 3. FILTRO DE PALAVRAS OFENSIVAS / XINGAMENTOS EM PORTUGUÊS
+    const PALAVRAS_BLOQUEADAS = [
+      "arrombado", "arrombada", "babaca", "bosta", "buceta", "burro",
+      "caralho", "corno", "cu", "cuzao", "desgracado", "desgracada",
+      "fdp", "filho da puta", "foda", "fuder", "idiota", "imbecil",
+      "lixo", "merda", "otario", "pau no cu", "piranha",
+      "porra", "puta", "puto", "retardado", "retardada", "safado",
+      "vagabundo", "vagabunda", "viado"
+    ];
+
+    let session = { apelido: "", chave: "" };
+    let pollTimer = null;
+
+    const loginScreen = document.getElementById("login-screen");
+    const chatScreen = document.getElementById("chat-screen");
+    const sendForm = document.getElementById("send-form");
+    const messagesBox = document.getElementById("messages-box");
+    const roomStatus = document.getElementById("room-status");
+    const activeUserEl = document.getElementById("active-user");
+    const logoutBtn = document.getElementById("logout-btn");
+    const loginAlert = document.getElementById("login-alert");
+    const chatAlert = document.getElementById("chat-alert");
+
+    function showAlert(el, text, isError) {
+      el.textContent = text;
+      el.className = "alert-box " + (isError ? "alert-error" : "alert-ok");
+      el.style.display = "block";
+      clearTimeout(el._timeout);
+      el._timeout = setTimeout(function () {
+        el.style.display = "none";
+      }, 4000);
+    }
+
+    // 5. CRIPTOGRAFIA XOR + BASE64
+    function criptografar(texto, chave) {
+      if (!chave) return texto;
+      const encoder = new TextEncoder();
+      const bytesTexto = encoder.encode(texto);
+      const bytesChave = encoder.encode(chave);
+      let binario = "";
+
+      for (let i = 0; i < bytesTexto.length; i++) {
+        const xorByte = bytesTexto[i] ^ bytesChave[i % bytesChave.length];
+        binario += String.fromCharCode(xorByte);
+      }
+      return btoa(binario);
+    }
+
+    function descriptografar(cifradoBase64, chave) {
+      if (!cifradoBase64 || !chave) return cifradoBase64 || "";
+      try {
+        const binario = atob(cifradoBase64);
+        const encoder = new TextEncoder();
+        const bytesChave = encoder.encode(chave);
+        const decifrados = new Uint8Array(binario.length);
+
+        for (let i = 0; i < binario.length; i++) {
+          decifrados[i] = binario.charCodeAt(i) ^ bytesChave[i % bytesChave.length];
+        }
+        return new TextDecoder().decode(decifrados);
+      } catch (e) {
+        return "[Mensagem cifrada ou chave diferente]";
+      }
+    }
+
+    // Filtro simples sem regex complexa
+    function normalizarTexto(texto) {
+      return texto
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "");
+    }
+
+    function contemOfensa(texto) {
+      const limpo = normalizarTexto(texto);
+      const palavras = limpo.split(/[^a-z0-9]+/).filter(Boolean);
+
+      for (let i = 0; i < PALAVRAS_BLOQUEADAS.length; i++) {
+        const proibida = PALAVRAS_BLOQUEADAS[i];
+        if (proibida.indexOf(" ") !== -1) {
+          if (limpo.indexOf(proibida) !== -1) return true;
+        } else {
+          for (let j = 0; j < palavras.length; j++) {
+            const semRepeticao = palavras[j].replace(/(.)\1+/g, "$1");
+            if (palavras[j] === proibida || semRepeticao === proibida) {
+              return true;
+            }
+          }
+        }
+      }
+      return false;
+    }
+
+    function formatarData(valor) {
+      if (!valor) return "";
+      const d = new Date(valor);
+      if (isNaN(d.getTime())) return String(valor);
+      return d.toLocaleTimeString("pt-BR", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      });
+    }
+
+    function escaparHTML(str) {
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    loginScreen.addEventListener("submit", function (e) {
+      e.preventDefault();
+      const apelido = document.getElementById("nickname").value.trim();
+      const chave = document.getElementById("room-key").value;
+
+      if (!apelido || !chave) return;
+
+      if (contemOfensa(apelido)) {
+        showAlert(loginAlert, "Apelido bloqueado: evite palavras ofensivas ou xingamentos.", true);
+        return;
+      }
+
+      if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL.indexOf("[COLE AQUI") !== -1) {
+        showAlert(loginAlert, "Configure primeiro a URL do Google Apps Script dentro do arquivo HTML.", true);
+        return;
+      }
+
+      session.apelido = apelido;
+      session.chave = chave;
+
+      loginScreen.style.display = "none";
+      chatScreen.style.display = "flex";
+      roomStatus.style.display = "flex";
+      activeUserEl.textContent = "Jogador: " + apelido;
+
+      carregarMensagens();
+      clearInterval(pollTimer);
+      pollTimer = setInterval(carregarMensagens, POLL_INTERVAL_MS);
+    });
+
+    logoutBtn.addEventListener("click", function () {
+      clearInterval(pollTimer);
+      session = { apelido: "", chave: "" };
+      chatScreen.style.display = "none";
+      roomStatus.style.display = "none";
+      loginScreen.style.display = "flex";
+      document.getElementById("message-input").value = "";
+    });
+
+    async function carregarMensagens() {
+      try {
+        const res = await fetch(APPS_SCRIPT_URL, { method: "GET" });
+        if (!res.ok) throw new Error("Falha ao buscar mensagens.");
+        const lista = await res.json();
+        renderizarMensagens(Array.isArray(lista) ? lista : []);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    function renderizarMensagens(lista) {
+      const estavaNoFim =
+        messagesBox.scrollTop + messagesBox.clientHeight >= messagesBox.scrollHeight - 40;
+
+      if (lista.length === 0) {
+        messagesBox.innerHTML = '<div class="empty-state">Nenhuma mensagem ainda. Seja o primeiro a enviar!</div>';
+        return;
+      }
+
+      messagesBox.innerHTML = lista
+        .map(function (item) {
+          const usuarioLimpo = descriptografar(item.usuario_cripto, session.chave);
+          const mensagemLimpa = descriptografar(item.mensagem_cripto, session.chave);
+          const hora = formatarData(item.data_hora);
+          const denunciada = String(item.status_denuncia || "").toUpperCase() === "DENUNCIADA";
+
+          return (
+            '<div class="msg-card ' + (denunciada ? "reported" : "") + '">' +
+              "<div>" +
+                '<div class="msg-meta">' +
+                  '<span class="msg-user">' + escaparHTML(usuarioLimpo) + "</span>" +
+                  (hora ? ' • <span>' + escaparHTML(hora) + "</span>" : "") +
+                "</div>" +
+                '<div class="msg-text">' + escaparHTML(mensagemLimpa) + "</div>" +
+                (denunciada ? '<div class="badge-reported">[STATUS: DENUNCIADA]</div>' : "") +
+              "</div>" +
+              '<button class="btn btn-sm btn-danger" type="button" onclick="denunciarMensagem(' +
+                Number(item.linha) +
+              ')" ' + (denunciada ? "disabled" : "") + ">" +
+                (denunciada ? "Denunciada" : "Denunciar") +
+              "</button>" +
+            "</div>"
+          );
+        })
+        .join("");
+
+      if (estavaNoFim) {
+        messagesBox.scrollTop = messagesBox.scrollHeight;
+      }
+    }
+
+    sendForm.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      const input = document.getElementById("message-input");
+      const texto = input.value.trim();
+      if (!texto) return;
+
+      if (contemOfensa(texto)) {
+        showAlert(chatAlert, "Mensagem bloqueada: xingamentos e palavras ofensivas não são permitidos.", true);
+        return;
+      }
+
+      const payload = {
+        acao: "enviar",
+        usuario_cripto: criptografar(session.apelido, session.chave),
+        mensagem_cripto: criptografar(texto, session.chave),
+        status_denuncia: "NORMAL"
+      };
+
+      try {
+        input.disabled = true;
+        const res = await fetch(APPS_SCRIPT_URL, {
+          method: "POST",
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error("Erro ao enviar.");
+        input.value = "";
+        showAlert(chatAlert, "Mensagem criptografada e enviada!", false);
+        await carregarMensagens();
+        messagesBox.scrollTop = messagesBox.scrollHeight;
+      } catch (err) {
+        showAlert(chatAlert, "Não foi possível enviar a mensagem. Verifique a URL do script.", true);
+      } finally {
+        input.disabled = false;
+        input.focus();
+      }
+    });
+
+    window.denunciarMensagem = async function (numeroLinha) {
+      if (!numeroLinha) return;
+
+      try {
+        const res = await fetch(APPS_SCRIPT_URL, {
+          method: "POST",
+          body: JSON.stringify({
+            acao: "denunciar",
+            linha: numeroLinha
+          })
+        });
+        if (!res.ok) throw new Error("Erro ao denunciar.");
+        showAlert(chatAlert, "Mensagem da linha " + numeroLinha + " marcada como DENUNCIADA.", true);
+        await carregarMensagens();
+      } catch (err) {
+        showAlert(chatAlert, "Falha ao enviar denúncia para a planilha.", true);
+      }
+    };
+  </script>
+</body>
+</html>
